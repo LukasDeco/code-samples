@@ -1,0 +1,59 @@
+name: Build and Deploy MongoDB Atlas App
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.REGISTRY_SERVER_DEV }}
+          username: ${{ secrets.REGISTRY_USERNAME_DEV }}
+          password: ${{ secrets.REGISTRY_PASSWORD_DEV }}
+
+      - run: |
+          cd app/hosting 
+          npm i --force
+          npm run test
+          docker build . -t ${{ secrets.REGISTRY_SERVER_DEV }}/my-app:${{ github.sha }} --build-arg next_public_atlas_app_id=${{ secrets.ATLAS_DEV_APP_ID}} 
+          docker push ${{ secrets.REGISTRY_SERVER_DEV }}/my-app:${{ github.sha }}
+
+      - uses: azure/webapps-deploy@v2
+        with:
+          app-name: "my-app-dev"
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE_DEV }}
+          images: "${{ secrets.REGISTRY_PASSWORD_DEV }}/my-app:${{ github.sha }}"
+  atlas-app-deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    steps:
+      - uses: actions/checkout@v2
+      - uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            atlasAppConfig:
+              - 'app/functions/**'
+              - 'app/auth_providers/**'
+              - 'app/environemnts/**'
+              - 'app/graphql/**'
+              - 'app/services/**'
+              - 'app/triggers/**'
+              - 'app/values/**'
+      - name: login and deploy
+        if: steps.changes.outputs.atlasAppConfig == 'true'
+        env:
+          ATLAS_PUBLIC_API_KEY: ${{ secrets.ATLAS_PUBLIC_API_KEY }}
+          ATLAS_PRIVATE_API_KEY: ${{ secrets.ATLAS_PRIVATE_API_KEY }}
+          ATLAS_DEV_APP_ID: ${{ secrets.ATLAS_DEV_APP_ID }}
+        run: |
+          cd app
+          npx mongodb-realm-cli@2.6.0 login --api-key=$ATLAS_PUBLIC_API_KEY --private-api-key=$ATLAS_PRIVATE_API_KEY
+          npx mongodb-realm-cli@2.6.0 import --remote=$ATLAS_DEV_APP_ID --yes --reset-cdn-cache
